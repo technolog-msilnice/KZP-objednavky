@@ -12,6 +12,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
+    kzpId,
     so,
     soManual,
     konstrukceId,
@@ -31,10 +32,11 @@ export async function POST(req: NextRequest) {
   }
 
   const result = await pool.query(
-    `INSERT INTO orders (so, so_manual, konstrukce_id, konstrukce_nazev, staniceni, identifikace, termin, manual, status, zkousky)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'objednáno',$9)
+    `INSERT INTO orders (kzp_id, so, so_manual, konstrukce_id, konstrukce_nazev, staniceni, identifikace, termin, manual, status, zkousky)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'objednáno',$10)
      RETURNING *`,
     [
+      kzpId || null,
       so,
       !!soManual,
       konstrukceId || null,

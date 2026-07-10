@@ -1,15 +1,44 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { KZP_520 } from "@/lib/kzp-data";
 
-type ManualTest = { id: string; nazev: string; pocet: number };
-type OrderZkouska = { kod: string | null; nazev: string; pocet: number };
-type Order = {
+const STAVBA_NAZEV = "I/16 Mladá Boleslav – Martinovice";
+
+type Zkouska = {
+  id: number;
+  kratky: string;
+  nazev: string;
+  hodnota: string;
+  norma: string;
+  cetnost: string;
+  pozadovano: string;
+  provede: string;
+  vystup: string;
+};
+type Konstrukce = {
+  id: number;
+  nazev: string;
+  material: string;
+  technologickaCast: string;
+  zkousky: Zkouska[];
+};
+type KzpDetail = {
   id: number;
   so: string;
+  cislo: string;
+  nazev: string;
+  konstrukce: Konstrukce[];
+};
+type KzpListItem = { id: number; so: string; cislo: string; nazev: string };
+
+type ManualTest = { id: string; nazev: string; pocet: number };
+type OrderZkouska = { kod: number | null; nazev: string; pocet: number };
+type Order = {
+  id: number;
+  kzp_id: number | null;
+  so: string;
   so_manual: boolean;
-  konstrukce_id: string | null;
+  konstrukce_id: number | null;
   konstrukce_nazev: string;
   staniceni: string | null;
   identifikace: string | null;
@@ -23,59 +52,90 @@ type Order = {
 export default function Home() {
   const [tab, setTab] = useState<"objednat" | "prehled" | "stav">("objednat");
   const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingOrders, setLoadingOrders] = useState(true);
   const [toast, setToast] = useState("");
 
-  const [soMode, setSoMode] = useState<"kzp" | "manual">("kzp");
+  const [kzpList, setKzpList] = useState<KzpListItem[]>([]);
+  const [selectedKzp, setSelectedKzp] = useState<number | "manual" | null>(null);
+  const [kzpDetail, setKzpDetail] = useState<KzpDetail | null>(null);
+  const [loadingKzp, setLoadingKzp] = useState(true);
   const [manualSoName, setManualSoName] = useState("");
-  const [konstrukceId, setKonstrukceId] = useState(KZP_520.konstrukce[0].id);
+
+  const [konstrukceId, setKonstrukceId] = useState<number | null>(null);
   const [manualMode, setManualMode] = useState(false);
   const [manualKonstrukce, setManualKonstrukce] = useState("");
   const [staniceni, setStaniceni] = useState("");
   const [identifikace, setIdentifikace] = useState("");
   const [termin, setTermin] = useState("");
-  const [checked, setChecked] = useState<Record<string, number>>({});
+  const [checked, setChecked] = useState<Record<number, number>>({});
   const [manualTests, setManualTests] = useState<ManualTest[]>([]);
 
-  const effManual = manualMode || soMode === "manual";
+  const effManual = manualMode || selectedKzp === "manual" || !kzpDetail;
   const konstrukce = useMemo(
-    () => KZP_520.konstrukce.find((k) => k.id === konstrukceId)!,
-    [konstrukceId]
+    () => kzpDetail?.konstrukce.find((k) => k.id === konstrukceId) || null,
+    [kzpDetail, konstrukceId]
   );
 
   async function loadOrders() {
-    setLoading(true);
+    setLoadingOrders(true);
     const res = await fetch("/api/orders");
     const data = await res.json();
     setOrders(data);
-    setLoading(false);
+    setLoadingOrders(false);
+  }
+
+  async function loadKzpList() {
+    setLoadingKzp(true);
+    const res = await fetch("/api/kzp");
+    const data: KzpListItem[] = await res.json();
+    setKzpList(data);
+    if (data.length > 0) setSelectedKzp(data[0].id);
+    else setSelectedKzp("manual");
+    setLoadingKzp(false);
   }
 
   useEffect(() => {
     loadOrders();
+    loadKzpList();
   }, []);
 
+  useEffect(() => {
+    if (typeof selectedKzp !== "number") {
+      setKzpDetail(null);
+      setKonstrukceId(null);
+      return;
+    }
+    fetch(`/api/kzp/${selectedKzp}`)
+      .then((r) => r.json())
+      .then((data: KzpDetail) => {
+        setKzpDetail(data);
+        setKonstrukceId(data.konstrukce[0]?.id ?? null);
+        setChecked({});
+      });
+  }, [selectedKzp]);
+
   const sums = useMemo(() => {
-    const s: Record<string, number> = {};
+    const s: Record<number, { objednano: number; hotovo: number }> = {};
     orders.forEach((o) => {
       if (o.manual || o.so_manual || !o.konstrukce_id) return;
       o.zkousky.forEach((z) => {
         if (!z.kod) return;
-        const key = o.konstrukce_id + "::" + z.kod;
-        s[key] = (s[key] || 0) + z.pocet;
+        if (!s[z.kod]) s[z.kod] = { objednano: 0, hotovo: 0 };
+        s[z.kod].objednano += z.pocet;
+        if (o.status === "v deníku") s[z.kod].hotovo += z.pocet;
       });
     });
     return s;
   }, [orders]);
 
-  function chybi(kId: string, zId: string, pozadovano: string) {
-    const objednano = sums[kId + "::" + zId] || 0;
+  function chybi(zId: number, pozadovano: string) {
+    const objednano = sums[zId]?.objednano || 0;
     const m = pozadovano.match(/\d+/);
     if (!m) return null;
     return Math.max(0, parseInt(m[0]) - objednano);
   }
 
-  function toggleCheck(id: string) {
+  function toggleCheck(id: number) {
     setChecked((c) => {
       const next = { ...c };
       if (next[id]) delete next[id];
@@ -83,7 +143,7 @@ export default function Home() {
       return next;
     });
   }
-  function setQty(id: string, val: string) {
+  function setQty(id: number, val: string) {
     const n = Math.max(1, parseInt(val) || 1);
     setChecked((c) => ({ ...c, [id]: n }));
   }
@@ -114,16 +174,15 @@ export default function Home() {
     setManualTests([]);
     setManualMode(false);
     setManualKonstrukce("");
-    setSoMode("kzp");
-    setManualSoName("");
   }
 
   async function submitOrder() {
-    const soNazev = soMode === "manual" ? manualSoName.trim() || "Neuvedeno" : KZP_520.so;
-    const soManualFlag = soMode === "manual";
+    const soNazev =
+      selectedKzp === "manual" ? manualSoName.trim() || "Neuvedeno" : kzpDetail?.so || "Neuvedeno";
+    const soManualFlag = selectedKzp === "manual";
 
     let konstrukceNazev: string;
-    let konstrukceIdToSave: string | null;
+    let konstrukceIdToSave: number | null;
     if (effManual) {
       konstrukceNazev = manualKonstrukce.trim();
       konstrukceIdToSave = null;
@@ -132,15 +191,16 @@ export default function Home() {
         return;
       }
     } else {
-      konstrukceNazev = konstrukce.nazev;
-      konstrukceIdToSave = konstrukce.id;
+      konstrukceNazev = konstrukce!.nazev;
+      konstrukceIdToSave = konstrukce!.id;
     }
 
-    const zkouskyZKzp: OrderZkouska[] = effManual
-      ? []
-      : konstrukce.zkousky
-          .filter((z) => checked[z.id])
-          .map((z) => ({ kod: z.id, nazev: z.kratky, pocet: checked[z.id] }));
+    const zkouskyZKzp: OrderZkouska[] =
+      effManual || !konstrukce
+        ? []
+        : konstrukce.zkousky
+            .filter((z) => checked[z.id])
+            .map((z) => ({ kod: z.id, nazev: z.kratky, pocet: checked[z.id] }));
 
     const zkouskyRucne: OrderZkouska[] = manualTests
       .filter((t) => t.nazev.trim())
@@ -156,6 +216,7 @@ export default function Home() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        kzpId: typeof selectedKzp === "number" ? selectedKzp : null,
         so: soNazev,
         soManual: soManualFlag,
         konstrukceId: konstrukceIdToSave,
@@ -192,7 +253,25 @@ export default function Home() {
   return (
     <div className="max-w-5xl mx-auto p-4 sm:p-8">
       <h1 className="text-xl font-semibold mb-1">KZP objednávky</h1>
-      <p className="text-sm text-gray-500 mb-6">{KZP_520.stavba}</p>
+      <p className="text-sm text-gray-500 mb-4">{STAVBA_NAZEV}</p>
+
+      <div className="mb-6 max-w-md">
+        <label className="block text-xs text-gray-500 mb-1">Aktivní KZP</label>
+        <select
+          className={inputCls}
+          value={selectedKzp ?? ""}
+          onChange={(e) =>
+            setSelectedKzp(e.target.value === "manual" ? "manual" : parseInt(e.target.value))
+          }
+        >
+          {kzpList.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.so} – KZP {k.cislo} – {k.nazev}
+            </option>
+          ))}
+          <option value="manual">Bez KZP (zadat ručně)</option>
+        </select>
+      </div>
 
       <div className="flex gap-1 border-b border-gray-200 mb-6">
         {[
@@ -220,14 +299,14 @@ export default function Home() {
         </div>
       )}
 
-      {loading ? (
+      {loadingKzp || loadingOrders ? (
         <p className="text-sm text-gray-500">Načítám…</p>
       ) : tab === "objednat" ? (
         <ObjednatForm
-          soMode={soMode}
-          setSoMode={setSoMode}
+          selectedKzp={selectedKzp}
           manualSoName={manualSoName}
           setManualSoName={setManualSoName}
+          kzpDetail={kzpDetail}
           konstrukceId={konstrukceId}
           setKonstrukceId={setKonstrukceId}
           manualMode={manualMode}
@@ -254,8 +333,12 @@ export default function Home() {
         />
       ) : tab === "prehled" ? (
         <Prehled orders={orders} nextStatus={nextStatus} />
+      ) : !kzpDetail ? (
+        <p className="text-sm text-gray-400 text-center py-12">
+          Vyberte konkrétní KZP nahoře pro zobrazení stavu plnění.
+        </p>
       ) : (
-        <StavPlneni sums={sums} />
+        <StavPlneni kzpDetail={kzpDetail} sums={sums} />
       )}
     </div>
   );
@@ -275,7 +358,7 @@ const inputCls =
 
 function ObjednatForm(props: any) {
   const {
-    soMode, setSoMode, manualSoName, setManualSoName,
+    selectedKzp, manualSoName, setManualSoName, kzpDetail,
     konstrukceId, setKonstrukceId, manualMode, setManualMode,
     manualKonstrukce, setManualKonstrukce, staniceni, setStaniceni,
     identifikace, setIdentifikace, termin, setTermin,
@@ -285,82 +368,70 @@ function ObjednatForm(props: any) {
 
   return (
     <div className="border border-gray-200 rounded-xl p-5 max-w-3xl">
-      <Field label="Stavební objekt">
-        {soMode === "manual" ? (
-          <>
-            <input
-              className={inputCls}
-              placeholder="Např. SO 130"
-              value={manualSoName}
-              onChange={(e) => setManualSoName(e.target.value)}
-            />
-            <p className="text-xs text-gray-400 mt-1">
-              Bez KZP – konstrukce i zkoušky se zadávají ručně níže.{" "}
-              <button className="underline" onClick={() => setSoMode("kzp")}>
-                Zpět na SO ze seznamu
-              </button>
-            </p>
-          </>
-        ) : (
-          <>
-            <select
-              className={inputCls}
-              value="kzp"
-              onChange={(e) => {
-                if (e.target.value === "manual") setSoMode("manual");
-              }}
-            >
-              <option value="kzp">{KZP_520.so}</option>
-            </select>
-            <p className="text-xs text-gray-400 mt-1">
-              Nenašli jste stavební objekt?{" "}
-              <button className="underline" onClick={() => setSoMode("manual")}>
-                Přidat ručně
-              </button>
-            </p>
-          </>
-        )}
-      </Field>
+      {selectedKzp === "manual" && (
+        <Field label="Stavební objekt">
+          <input
+            className={inputCls}
+            placeholder="Např. SO 130"
+            value={manualSoName}
+            onChange={(e) => setManualSoName(e.target.value)}
+          />
+          <p className="text-xs text-gray-400 mt-1">
+            Bez KZP – konstrukce i zkoušky se zadávají ručně níže.
+          </p>
+        </Field>
+      )}
 
-      <Field label="Konstrukce">
-        {effManual ? (
-          <>
-            <input
-              className={inputCls}
-              placeholder="Zadejte název konstrukce"
-              value={manualKonstrukce}
-              onChange={(e) => setManualKonstrukce(e.target.value)}
-            />
-            {soMode === "kzp" && (
+      {kzpDetail && (
+        <Field label="Konstrukce">
+          {manualMode ? (
+            <>
+              <input
+                className={inputCls}
+                placeholder="Zadejte název konstrukce"
+                value={manualKonstrukce}
+                onChange={(e) => setManualKonstrukce(e.target.value)}
+              />
               <p className="text-xs text-gray-400 mt-1">
                 <button className="underline" onClick={() => setManualMode(false)}>
                   Zpět na seznam z KZP
                 </button>
               </p>
-            )}
-          </>
-        ) : (
-          <>
-            <select
-              className={inputCls}
-              value={konstrukceId}
-              onChange={(e) => setKonstrukceId(e.target.value)}
-            >
-              {KZP_520.konstrukce.map((k) => (
-                <option key={k.id} value={k.id}>
-                  {k.nazev}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-400 mt-1">
-              Nenašli jste konstrukci?{" "}
-              <button className="underline" onClick={() => setManualMode(true)}>
-                Přidat ručně
-              </button>
-            </p>
-          </>
-        )}
-      </Field>
+            </>
+          ) : (
+            <>
+              <select
+                className={inputCls}
+                value={konstrukceId ?? ""}
+                onChange={(e) => setKonstrukceId(parseInt(e.target.value))}
+              >
+                {kzpDetail.konstrukce.map((k: Konstrukce) => (
+                  <option key={k.id} value={k.id}>
+                    {k.nazev}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                Nenašli jste konstrukci?{" "}
+                <button className="underline" onClick={() => setManualMode(true)}>
+                  Přidat ručně
+                </button>
+              </p>
+            </>
+          )}
+        </Field>
+      )}
+
+      {effManual && !kzpDetail && (
+        <Field label="Konstrukce">
+          <input
+            className={inputCls}
+            placeholder="Zadejte název konstrukce"
+            value={manualKonstrukce}
+            onChange={(e) => setManualKonstrukce(e.target.value)}
+          />
+        </Field>
+      )}
 
       <div className="grid grid-cols-2 gap-3 mb-4">
         <Field label="Staničení / Opěra">
@@ -381,7 +452,7 @@ function ObjednatForm(props: any) {
         </Field>
       </div>
 
-      {!effManual && (
+      {!effManual && konstrukce && (
         <>
           <p className="text-sm font-medium mb-2">Zkoušky dle KZP pro tuto konstrukci</p>
           <div className="border border-gray-200 rounded-lg overflow-hidden mb-4 overflow-x-auto">
@@ -397,8 +468,8 @@ function ObjednatForm(props: any) {
                 </tr>
               </thead>
               <tbody>
-                {konstrukce.zkousky.map((z: any) => {
-                  const ch = chybi(konstrukce.id, z.id, z.pozadovano);
+                {konstrukce.zkousky.map((z: Zkouska) => {
+                  const ch = chybi(z.id, z.pozadovano);
                   const isChecked = !!checked[z.id];
                   return (
                     <tr key={z.id} className={`border-t border-gray-100 ${isChecked ? "" : "opacity-50"}`}>
@@ -591,15 +662,28 @@ function Prehled({ orders, nextStatus }: { orders: Order[]; nextStatus: (o: Orde
   );
 }
 
-function StavPlneni({ sums }: { sums: Record<string, number> }) {
+function StavPlneni({
+  kzpDetail,
+  sums,
+}: {
+  kzpDetail: KzpDetail;
+  sums: Record<number, { objednano: number; hotovo: number }>;
+}) {
   const rows: any[] = [];
-  KZP_520.konstrukce.forEach((k) => {
+  kzpDetail.konstrukce.forEach((k) => {
     k.zkousky.forEach((z) => {
-      const objednano = sums[k.id + "::" + z.id] || 0;
+      const rec = sums[z.id] || { objednano: 0, hotovo: 0 };
       const m = z.pozadovano.match(/\d+/);
       const req = m ? parseInt(m[0]) : null;
-      const zbyva = req !== null ? Math.max(0, req - objednano) : null;
-      rows.push({ konstrukce: k.nazev, zkouska: z.kratky, pozadovano: z.pozadovano, objednano, zbyva });
+      const zbyva = req !== null ? Math.max(0, req - rec.hotovo) : null;
+      rows.push({
+        konstrukce: k.nazev,
+        zkouska: z.kratky,
+        pozadovano: z.pozadovano,
+        provedeno: rec.hotovo,
+        zbyva,
+        objednano: rec.objednano,
+      });
     });
   });
 
@@ -611,8 +695,9 @@ function StavPlneni({ sums }: { sums: Record<string, number> }) {
             <th className="p-2">Konstrukce</th>
             <th className="p-2">Zkouška</th>
             <th className="p-2">Požadováno dle KZP</th>
-            <th className="p-2">Objednáno</th>
+            <th className="p-2">Provedeno dle KZP</th>
             <th className="p-2">Zbývá</th>
+            <th className="p-2">Objednáno</th>
           </tr>
         </thead>
         <tbody>
@@ -621,7 +706,7 @@ function StavPlneni({ sums }: { sums: Record<string, number> }) {
               <td className="p-2">{r.konstrukce}</td>
               <td className="p-2">{r.zkouska}</td>
               <td className="p-2">{r.pozadovano}</td>
-              <td className="p-2">{r.objednano}</td>
+              <td className="p-2">{r.provedeno}</td>
               <td className="p-2">
                 {r.zbyva === null ? (
                   "–"
@@ -631,6 +716,7 @@ function StavPlneni({ sums }: { sums: Record<string, number> }) {
                   <span className="text-xs bg-amber-50 text-amber-700 rounded-full px-2 py-0.5">{r.zbyva}</span>
                 )}
               </td>
+              <td className="p-2">{r.objednano}</td>
             </tr>
           ))}
         </tbody>
