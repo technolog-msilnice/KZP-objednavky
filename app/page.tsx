@@ -50,7 +50,7 @@ type Order = {
 };
 
 export default function Home() {
-  const [tab, setTab] = useState<"objednat" | "prehled" | "stav">("objednat");
+  const [tab, setTab] = useState<"objednat" | "prehled" | "stav" | "nahrat">("objednat");
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [toast, setToast] = useState("");
@@ -278,6 +278,7 @@ export default function Home() {
           { id: "objednat", label: "Objednat zkoušku" },
           { id: "prehled", label: "Přehled objednávek" },
           { id: "stav", label: "Stav plnění KZP" },
+          { id: "nahrat", label: "Nahrát KZP" },
         ].map((t) => (
           <button
             key={t.id}
@@ -333,6 +334,15 @@ export default function Home() {
         />
       ) : tab === "prehled" ? (
         <Prehled orders={orders} nextStatus={nextStatus} />
+      ) : tab === "nahrat" ? (
+        <NahratKzp
+          onSaved={async (newId: number) => {
+            await loadKzpList();
+            setSelectedKzp(newId);
+            setTab("objednat");
+            setToast("KZP bylo úspěšně uloženo a je teď dostupné v roletce nahoře.");
+          }}
+        />
       ) : !kzpDetail ? (
         <p className="text-sm text-gray-400 text-center py-12">
           Vyberte konkrétní KZP nahoře pro zobrazení stavu plnění.
@@ -721,6 +731,289 @@ function StavPlneni({
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+type ExtractedZkouska = {
+  kratky: string;
+  nazev: string;
+  hodnota: string;
+  norma: string;
+  cetnost: string;
+  pozadovano: string;
+  provede: string;
+  vystup: string;
+};
+type ExtractedKonstrukce = {
+  nazev: string;
+  material: string;
+  technologickaCast: string;
+  zkousky: ExtractedZkouska[];
+};
+type ExtractedKzp = {
+  so: string;
+  cislo: string;
+  nazev: string;
+  konstrukce: ExtractedKonstrukce[];
+};
+
+function NahratKzp({ onSaved }: { onSaved: (newId: number) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [parsing, setParsing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [extracted, setExtracted] = useState<ExtractedKzp | null>(null);
+
+  async function handleParse() {
+    if (!file) {
+      setError("Nejdřív vyberte PDF soubor.");
+      return;
+    }
+    setError("");
+    setParsing(true);
+    setExtracted(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/kzp/parse", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Zpracování se nepovedlo.");
+      } else {
+        setExtracted(data);
+      }
+    } catch {
+      setError("Zpracování se nepovedlo. Zkuste to prosím znovu.");
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  function updateHeader(field: "so" | "cislo" | "nazev", value: string) {
+    setExtracted((e) => (e ? { ...e, [field]: value } : e));
+  }
+  function updateKonstrukce(ki: number, field: "nazev" | "material", value: string) {
+    setExtracted((e) => {
+      if (!e) return e;
+      const konstrukce = [...e.konstrukce];
+      konstrukce[ki] = { ...konstrukce[ki], [field]: value };
+      return { ...e, konstrukce };
+    });
+  }
+  function removeKonstrukce(ki: number) {
+    setExtracted((e) => {
+      if (!e) return e;
+      return { ...e, konstrukce: e.konstrukce.filter((_, i) => i !== ki) };
+    });
+  }
+  function updateZkouska(ki: number, zi: number, field: keyof ExtractedZkouska, value: string) {
+    setExtracted((e) => {
+      if (!e) return e;
+      const konstrukce = [...e.konstrukce];
+      const zkousky = [...konstrukce[ki].zkousky];
+      zkousky[zi] = { ...zkousky[zi], [field]: value };
+      konstrukce[ki] = { ...konstrukce[ki], zkousky };
+      return { ...e, konstrukce };
+    });
+  }
+  function removeZkouska(ki: number, zi: number) {
+    setExtracted((e) => {
+      if (!e) return e;
+      const konstrukce = [...e.konstrukce];
+      konstrukce[ki] = {
+        ...konstrukce[ki],
+        zkousky: konstrukce[ki].zkousky.filter((_, i) => i !== zi),
+      };
+      return { ...e, konstrukce };
+    });
+  }
+
+  async function handleSave() {
+    if (!extracted) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch("/api/kzp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(extracted),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Uložení se nepovedlo.");
+      } else {
+        setExtracted(null);
+        setFile(null);
+        onSaved(data.id);
+      }
+    } catch {
+      setError("Uložení se nepovedlo. Zkuste to prosím znovu.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const zkouskaFieldCls =
+    "w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-gray-300";
+
+  return (
+    <div>
+      {!extracted && (
+        <div className="border border-gray-200 rounded-xl p-5 max-w-xl">
+          <p className="text-sm font-medium mb-2">Nahrát nové KZP</p>
+          <p className="text-xs text-gray-500 mb-4">
+            Appka přečte PDF pomocí AI a vytáhne z něj konstrukce a zkoušky. Než se to uloží,
+            uvidíte náhled k opravě a potvrzení.
+          </p>
+          <input
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+            className="text-sm mb-4 block"
+          />
+          {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+          <button
+            onClick={handleParse}
+            disabled={parsing || !file}
+            className="border border-gray-300 rounded-lg px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+          >
+            {parsing ? "Čtu KZP pomocí AI… (může to trvat i minutu)" : "Přečíst KZP pomocí AI"}
+          </button>
+        </div>
+      )}
+
+      {extracted && (
+        <div>
+          <div className="border border-gray-200 rounded-xl p-5 max-w-3xl mb-4">
+            <p className="text-sm font-medium mb-3">Zkontrolujte vytažená data</p>
+            <div className="grid grid-cols-3 gap-3 mb-2">
+              <Field label="Stavební objekt">
+                <input
+                  className={inputCls}
+                  value={extracted.so}
+                  onChange={(e) => updateHeader("so", e.target.value)}
+                />
+              </Field>
+              <Field label="Číslo KZP">
+                <input
+                  className={inputCls}
+                  value={extracted.cislo}
+                  onChange={(e) => updateHeader("cislo", e.target.value)}
+                />
+              </Field>
+              <Field label="Název">
+                <input
+                  className={inputCls}
+                  value={extracted.nazev}
+                  onChange={(e) => updateHeader("nazev", e.target.value)}
+                />
+              </Field>
+            </div>
+          </div>
+
+          {extracted.konstrukce.map((k, ki) => (
+            <div key={ki} className="border border-gray-200 rounded-xl p-4 max-w-3xl mb-4">
+              <div className="flex items-center gap-2 mb-3">
+                <input
+                  className={inputCls}
+                  style={{ flex: 2 }}
+                  value={k.nazev}
+                  onChange={(e) => updateKonstrukce(ki, "nazev", e.target.value)}
+                  placeholder="Název konstrukce"
+                />
+                <input
+                  className={inputCls}
+                  style={{ flex: 1 }}
+                  value={k.material}
+                  onChange={(e) => updateKonstrukce(ki, "material", e.target.value)}
+                  placeholder="Materiál"
+                />
+                <button
+                  onClick={() => removeKonstrukce(ki)}
+                  className="text-gray-400 hover:text-red-500 text-sm px-2"
+                  title="Odebrat konstrukci"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="border border-gray-200 rounded-lg overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 text-left text-gray-500">
+                      <th className="p-1.5">Krátký název</th>
+                      <th className="p-1.5">Plný název</th>
+                      <th className="p-1.5">Hodnota</th>
+                      <th className="p-1.5">Norma</th>
+                      <th className="p-1.5">Četnost</th>
+                      <th className="p-1.5">Počet</th>
+                      <th className="p-1.5">Provede</th>
+                      <th className="p-1.5">Výstup</th>
+                      <th className="p-1.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {k.zkousky.map((z, zi) => (
+                      <tr key={zi} className="border-t border-gray-100">
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.kratky} onChange={(e) => updateZkouska(ki, zi, "kratky", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.nazev} onChange={(e) => updateZkouska(ki, zi, "nazev", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.hodnota} onChange={(e) => updateZkouska(ki, zi, "hodnota", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.norma} onChange={(e) => updateZkouska(ki, zi, "norma", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.cetnost} onChange={(e) => updateZkouska(ki, zi, "cetnost", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.pozadovano} onChange={(e) => updateZkouska(ki, zi, "pozadovano", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.provede} onChange={(e) => updateZkouska(ki, zi, "provede", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <input className={zkouskaFieldCls} value={z.vystup} onChange={(e) => updateZkouska(ki, zi, "vystup", e.target.value)} />
+                        </td>
+                        <td className="p-1.5">
+                          <button onClick={() => removeZkouska(ki, zi)} className="text-gray-400 hover:text-red-500">
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+
+          {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+
+          <div className="flex gap-3">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="border border-gray-300 rounded-lg px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+            >
+              {saving ? "Ukládám…" : "Uložit do databáze"}
+            </button>
+            <button
+              onClick={() => {
+                setExtracted(null);
+                setFile(null);
+              }}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              Zahodit a začít znovu
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
